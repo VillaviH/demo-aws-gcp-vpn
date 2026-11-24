@@ -1,0 +1,21 @@
+# Copia este archivo a terraform.tfvars y ajusta los valores.
+# Solo placeholders genericos: no pongas cuentas ni IDs reales en el repo.
+
+# Proyecto de GCP (obligatorio, reemplaza el placeholder)
+gcp_project_id = "your-gcp-project-id"
+
+# Regiones
+aws_region = "us-east-1"
+gcp_region = "us-east4"
+
+# Tamano de la VM con SQL Server (necesita >= 2 GB de RAM)
+gcp_machine_type = "e2-medium"
+
+# Gateway del lado AWS: "vgw" (simple y barato) o "tgw"
+aws_target_gateway = "vgw"
+
+# Sincronizacion por Streams: dejar en false hasta terminar el full load
+enable_streams_sync = false
+
+# Proteccion contra aplicar en la cuenta equivocada (opcional)
+# aws_allowed_account_ids = ["111122223333"]

@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Demo VPN AWS ↔ GCP: arquitectura y costos</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#07090f;color:#e2e8f0;overflow-x:hidden;line-height:1.5;}
+  body::before{content:'';position:fixed;inset:0;
+    background-image:linear-gradient(rgba(99,102,241,.03) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(99,102,241,.03) 1px,transparent 1px);
+    background-size:40px 40px;pointer-events:none;z-index:0;}
+  section{position:relative;z-index:1;padding:60px 40px;border-bottom:1px solid rgba(255,255,255,.04);
+    display:flex;flex-direction:column;align-items:center;}
+  .hero{background:radial-gradient(ellipse at 30% 40%,rgba(245,158,11,.13) 0%,transparent 60%),
+      radial-gradient(ellipse at 70% 70%,rgba(59,130,246,.12) 0%,transparent 50%);padding-top:80px;}
+  .pill{display:inline-block;background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);
+    color:#fcd34d;font-size:12px;font-weight:700;letter-spacing:3px;text-transform:uppercase;
+    padding:7px 22px;border-radius:20px;margin-bottom:24px;}
+  h1{font-size:2.8rem;font-weight:900;text-align:center;line-height:1.2;margin-bottom:14px;
+    background:linear-gradient(135deg,#fff 0%,#c7d2fe 40%,#34d399 100%);
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+  .sub{font-size:1.25rem;font-weight:600;color:#94a3b8;text-align:center;max-width:860px;}
+  h2{font-size:2.1rem;font-weight:800;margin-bottom:10px;text-align:center;}
+  .lead{color:#64748b;font-size:1.05rem;text-align:center;margin-bottom:34px;max-width:860px;}
+  .wrap{width:100%;max-width:1240px;}
+  .card{background:rgba(8,12,24,.95);border:1px solid rgba(99,102,241,.2);border-radius:20px;padding:22px;margin-bottom:24px;}
+  svg{display:block;width:100%;height:auto;}
+  svg text{font-family:'Segoe UI',system-ui,sans-serif;}
+  .notes{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  .note{border-radius:14px;padding:18px 22px;border:1px solid rgba(255,255,255,.08);background:rgba(8,12,24,.85);
+    font-size:15px;color:#94a3b8;}
+  .note h3{font-size:15px;margin-bottom:8px;color:#e2e8f0;}
+  .note b{color:#fff;}
+  .note.blue{border-color:rgba(59,130,246,.35);} .note.blue h3{color:#93c5fd;}
+  .note.amber{border-color:rgba(245,158,11,.4);} .note.amber h3{color:#fcd34d;}
+  table{width:100%;border-collapse:collapse;font-size:14.5px;}
+  th{font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;text-align:left;padding:10px 10px;
+    border-bottom:1px solid rgba(255,255,255,.12);}
+  td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.05);color:#cbd5e1;vertical-align:top;}
+  td.n,th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
+  tr.cloud td{font-weight:800;font-size:15px;padding-top:18px;border-bottom:1px solid rgba(255,255,255,.12);}
+  tr.cloud.aws td{color:#fbbf24;} tr.cloud.gcp td{color:#93c5fd;}
+  tr.sub td{font-weight:700;color:#e2e8f0;background:rgba(255,255,255,.03);}
+  tr.total td{font-weight:900;font-size:17px;color:#6ee7b7;background:rgba(16,185,129,.08);border-bottom:none;}
+  td .src{color:#818cf8;font-weight:700;text-decoration:none;}
+  td small{display:block;color:#64748b;font-size:12px;}
+  .fixed{color:#fca5a5;font-weight:700;}
+  .callout{width:100%;max-width:1240px;border-radius:16px;padding:22px 28px;margin:24px 0 0;
+    background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.45);color:#fecaca;font-size:16px;}
+  .callout h3{color:#fca5a5;font-size:18px;margin-bottom:8px;}
+  .callout b{color:#fff;}
+  ul.sup{list-style:none;display:flex;flex-direction:column;gap:8px;font-size:15px;color:#94a3b8;}
+  ul.sup li::before{content:'•';color:#818cf8;margin-right:10px;}
+  ul.sup b{color:#e2e8f0;}
+  ol.refs{padding-left:24px;font-size:13.5px;color:#94a3b8;display:flex;flex-direction:column;gap:6px;}
+  ol.refs a{color:#a5b4fc;word-break:break-all;}
+  .cmd{background:#020617;border:1px solid rgba(16,185,129,.4);border-radius:12px;padding:18px 24px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.25rem;color:#6ee7b7;margin:6px 0 18px;}
+  .disc{font-size:13.5px;color:#64748b;margin-top:14px;}
+  @media (max-width:900px){.notes{grid-template-columns:1fr;} section{padding:40px 16px;}}
+</style>
+</head>
+<body>
+
+<section class="hero">
+  <span class="pill">Demo · Terraform</span>
+  <h1>VPN site-to-site AWS ↔ Google Cloud</h1>
+  <p class="sub">Arquitectura que implementa el Terraform y estimado de costos de tenerlo encendido 3 días (72 horas)</p>
+</section>
+
+<section>
+  <h2>Arquitectura</h2>
+  <p class="lead">AWS hace de “nube” (DynamoDB + Lambda) y Google Cloud simula el on-premise con SQL Server en Docker. Se unen con una VPN IPsec de 2 túneles y BGP.</p>
+  <div class="wrap">
+    <div class="card">
+<svg viewBox="0 0 1400 800" role="img" aria-labelledby="dt dd">
+  <title id="dt">Diagrama de arquitectura AWS a GCP por VPN site-to-site</title>
+  <desc id="dd">Lambda en una VPC de AWS lee DynamoDB y Streams, y escribe en SQL Server en una VM de GCP a través de una VPN de 2 túneles con BGP.</desc>
+  <defs>
+    <marker id="aB" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#60a5fa"/></marker>
+    <marker id="aO" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fb923c"/></marker>
+    <marker id="aG" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker>
+    <marker id="aR" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f87171"/></marker>
+  </defs>
+
+  <!-- ===== AWS ===== -->
+  <rect x="10" y="10" width="630" height="775" rx="18" fill="rgba(245,158,11,.04)" stroke="#f59e0b" stroke-width="2"/>
+  <text x="30" y="42" font-size="22" font-weight="800" fill="#fbbf24">AWS · us-east-1</text>
+
+  <!-- servicios regionales -->
+  <rect x="30" y="125" width="200" height="75" rx="10" fill="#0b1020" stroke="#dc2626" stroke-width="2"/>
+  <text x="130" y="152" text-anchor="middle" font-size="16" font-weight="700" fill="#f1f5f9">DynamoDB origen</text>
+  <text x="130" y="176" text-anchor="middle" font-size="13" fill="#fca5a5">+ Streams (NEW_IMAGE)</text>
+  <rect x="245" y="125" width="130" height="75" rx="10" fill="#0b1020" stroke="#7d5ba6" stroke-width="2"/>
+  <text x="310" y="152" text-anchor="middle" font-size="16" font-weight="700" fill="#f1f5f9">Tabla de</text>
+  <text x="310" y="174" text-anchor="middle" font-size="16" font-weight="700" fill="#f1f5f9">control</text>
+  <rect x="390" y="125" width="110" height="75" rx="10" fill="#0b1020" stroke="#ef4444" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="445" y="152" text-anchor="middle" font-size="16" font-weight="700" fill="#f1f5f9">DLQ SQS</text>
+  <text x="445" y="176" text-anchor="middle" font-size="13" fill="#fca5a5">con Streams</text>
+  <rect x="515" y="125" width="115" height="75" rx="10" fill="#0b1020" stroke="#10b981" stroke-width="2"/>
+  <text x="572" y="152" text-anchor="middle" font-size="16" font-weight="700" fill="#f1f5f9">Secrets</text>
+  <text x="572" y="174" text-anchor="middle" font-size="16" font-weight="700" fill="#f1f5f9">Manager</text>
+  <text x="30" y="72" font-size="13" fill="#64748b">Servicios regionales (fuera de la VPC)</text>
+
+  <!-- DynamoDB -> DLQ -->
+  <path d="M 130,125 V 106 H 445 V 123" fill="none" stroke="#f87171" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#aR)"/>
+  <text x="290" y="100" text-anchor="middle" font-size="12" fill="#f87171">lotes que fallan tras los reintentos</text>
+
+  <!-- VPC -->
+  <rect x="25" y="250" width="600" height="525" rx="14" fill="rgba(245,158,11,.03)" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="8 5"/>
+  <text x="310" y="276" font-size="16" font-weight="700" fill="#fbbf24">VPC 10.20.0.0/16</text>
+  <rect x="40" y="290" width="570" height="360" rx="10" fill="rgba(255,255,255,.02)" stroke="#475569" stroke-width="1.2"/>
+  <text x="305" y="312" font-size="13" fill="#94a3b8">2 subnets privadas · sin IGW ni NAT</text>
+
+  <rect x="65" y="330" width="245" height="60" rx="10" fill="#0b1020" stroke="#3b82f6" stroke-width="2"/>
+  <text x="187" y="356" text-anchor="middle" font-size="15" font-weight="700" fill="#f1f5f9">VPC endpoint Gateway</text>
+  <text x="187" y="377" text-anchor="middle" font-size="13" fill="#93c5fd">DynamoDB (sin costo)</text>
+  <rect x="330" y="330" width="270" height="60" rx="10" fill="#0b1020" stroke="#3b82f6" stroke-width="2"/>
+  <text x="465" y="356" text-anchor="middle" font-size="15" font-weight="700" fill="#f1f5f9">VPC endpoint Interface</text>
+  <text x="465" y="377" text-anchor="middle" font-size="13" fill="#93c5fd">Secrets Manager (1 AZ)</text>
+
+  <rect x="80" y="470" width="250" height="90" rx="12" fill="#0b1020" stroke="#f59e0b" stroke-width="2.5"/>
+  <text x="205" y="502" text-anchor="middle" font-size="18" font-weight="800" fill="#fbbf24">Lambda de sync</text>
+  <text x="205" y="525" text-anchor="middle" font-size="13" fill="#94a3b8">Python 3.12 · 256 MB · en la VPC</text>
+  <text x="205" y="545" text-anchor="middle" font-size="13" fill="#94a3b8">SG: solo sale a 1433, 443</text>
+
+  <!-- Lambda <-> endpoints / servicios -->
+  <path d="M 150,468 V 392" fill="none" stroke="#60a5fa" stroke-width="3" marker-end="url(#aB)"/>
+  <path d="M 150,328 V 202" fill="none" stroke="#60a5fa" stroke-width="3" marker-end="url(#aB)"/>
+  <rect x="158" y="236" width="108" height="22" rx="6" fill="#07090f"/>
+  <text x="212" y="252" text-anchor="middle" font-size="13" font-weight="700" fill="#60a5fa">① Scan paginado</text>
+  <path d="M 290,328 V 202" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#aG)"/>
+  <text x="296" y="222" font-size="12" fill="#94a3b8">checkpoint</text>
+  <path d="M 330,515 H 470 V 392" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#aG)"/>
+  <path d="M 570,328 V 202" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#aG)"/>
+  <text x="548" y="270" text-anchor="end" font-size="12" fill="#94a3b8">credenciales</text>
+  <!-- Streams -> Lambda -->
+  <path d="M 38,202 V 515 H 78" fill="none" stroke="#fb923c" stroke-width="3" marker-end="url(#aO)"/>
+  <rect x="44" y="410" width="22" height="22" rx="6" fill="#07090f" stroke="none"/>
+  <text x="56" y="427" text-anchor="middle" font-size="14" font-weight="800" fill="#fb923c">②</text>
+  <text x="50" y="450" font-size="12" fill="#fb923c">evento</text>
+
+  <!-- Lambda -> VGW -->
+  <path d="M 150,562 V 686" fill="none" stroke="#60a5fa" stroke-width="3" marker-end="url(#aB)"/>
+  <path d="M 260,562 V 686" fill="none" stroke="#fb923c" stroke-width="3" marker-end="url(#aO)"/>
+  <rect x="270" y="590" width="195" height="44" rx="6" fill="#07090f"/>
+  <text x="278" y="608" font-size="13" font-weight="700" fill="#60a5fa">① INSERT por lotes</text>
+  <text x="278" y="626" font-size="13" font-weight="700" fill="#fb923c">② MERGE por evento</text>
+  <text x="158" y="660" font-size="12" fill="#94a3b8">TCP 1433</text>
+
+  <rect x="80" y="688" width="530" height="72" rx="12" fill="#0b1020" stroke="#f59e0b" stroke-width="2.5"/>
+  <text x="345" y="716" text-anchor="middle" font-size="17" font-weight="800" fill="#fbbf24">Virtual Private Gateway · ASN 64512</text>
+  <text x="345" y="741" text-anchor="middle" font-size="13" fill="#94a3b8">Customer gateway + 1 conexión VPN · propaga rutas BGP a la tabla privada</text>
+
+  <!-- ===== VPN ===== -->
+  <text x="715" y="612" text-anchor="middle" font-size="17" font-weight="800" fill="#c7d2fe">VPN</text>
+  <text x="715" y="634" text-anchor="middle" font-size="14" font-weight="700" fill="#c7d2fe">Site-to-Site</text>
+  <text x="715" y="656" text-anchor="middle" font-size="13" fill="#94a3b8">IPsec · IKEv2</text>
+  <text x="715" y="676" text-anchor="middle" font-size="13" fill="#94a3b8">2 túneles + BGP</text>
+  <text x="715" y="696" text-anchor="middle" font-size="12" fill="#818cf8">64512 ↔ 65010</text>
+  <path d="M 612,710 H 818" fill="none" stroke="#818cf8" stroke-width="4" marker-end="url(#aG)"/>
+  <path d="M 612,742 H 818" fill="none" stroke="#818cf8" stroke-width="4" marker-end="url(#aG)"/>
+  <rect x="672" y="714" width="86" height="20" rx="6" fill="#07090f"/>
+  <text x="715" y="729" text-anchor="middle" font-size="12" fill="#c7d2fe">túnel 1 / 2</text>
+
+  <!-- ===== GCP ===== -->
+  <rect x="780" y="10" width="610" height="775" rx="18" fill="rgba(59,130,246,.04)" stroke="#3b82f6" stroke-width="2"/>
+  <text x="800" y="42" font-size="22" font-weight="800" fill="#93c5fd">Google Cloud · us-east4</text>
+
+  <!-- flujos (leyenda) -->
+  <rect x="800" y="62" width="570" height="76" rx="10" fill="#0b1020" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="816" y="86" font-size="15" font-weight="800" fill="#60a5fa">① Full load (manual)</text>
+  <text x="816" y="108" font-size="13" fill="#cbd5e1">Lambda hace Scan a DynamoDB en páginas y</text>
+  <text x="816" y="126" font-size="13" fill="#cbd5e1">hace INSERT en SQL Server por la VPN.</text>
+  <rect x="800" y="148" width="570" height="76" rx="10" fill="#0b1020" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="816" y="172" font-size="15" font-weight="800" fill="#fb923c">② Evento de Streams (opcional)</text>
+  <text x="816" y="194" font-size="13" fill="#cbd5e1">Un cambio en DynamoDB llega por Streams a la</text>
+  <text x="816" y="212" font-size="13" fill="#cbd5e1">Lambda, que hace MERGE en SQL Server (enable_streams_sync).</text>
+
+  <!-- VPC GCP -->
+  <rect x="800" y="250" width="570" height="525" rx="14" fill="rgba(59,130,246,.03)" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="8 5"/>
+  <text x="815" y="276" font-size="16" font-weight="700" fill="#93c5fd">VPC (routing GLOBAL) · subnet 10.10.1.0/24</text>
+
+  <rect x="820" y="296" width="530" height="278" rx="12" fill="rgba(245,158,11,.04)" stroke="#fbbf24" stroke-width="2" stroke-dasharray="7 4"/>
+  <text x="835" y="320" font-size="14" font-weight="700" fill="#fbbf24">Firewall: solo tcp 1433 desde las subnets de AWS</text>
+  <rect x="840" y="336" width="490" height="226" rx="12" fill="#0b1020" stroke="#dc2626" stroke-width="2.5"/>
+  <text x="1085" y="366" text-anchor="middle" font-size="18" font-weight="800" fill="#f1f5f9">VM e2-medium · Container-Optimized OS</text>
+  <text x="1085" y="388" text-anchor="middle" font-size="13" fill="#94a3b8">disco 30 GB pd-balanced · IP interna fija</text>
+  <rect x="870" y="404" width="430" height="82" rx="10" fill="rgba(220,38,38,.10)" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="1085" y="434" text-anchor="middle" font-size="17" font-weight="800" fill="#fca5a5">Docker · SQL Server 2022</text>
+  <text x="1085" y="458" text-anchor="middle" font-size="14" fill="#cbd5e1">demo_db · dbo.merchants · puerto 1433</text>
+  <text x="1085" y="512" text-anchor="middle" font-size="13" fill="#94a3b8">Sin IP pública entrante. IP externa efímera solo para</text>
+  <text x="1085" y="532" text-anchor="middle" font-size="13" fill="#94a3b8">bajar la imagen de Docker (assign_public_ip).</text>
+
+  <!-- VPN GW -> VM -->
+  <path d="M 880,680 V 576" fill="none" stroke="#60a5fa" stroke-width="3" marker-end="url(#aB)"/>
+  <path d="M 940,680 V 576" fill="none" stroke="#fb923c" stroke-width="3" marker-end="url(#aO)"/>
+  <text x="1000" y="624" font-size="13" fill="#94a3b8">1433 (ambos flujos usan</text>
+  <text x="1000" y="642" font-size="13" fill="#94a3b8">los mismos túneles)</text>
+
+  <rect x="820" y="682" width="200" height="78" rx="12" fill="#0b1020" stroke="#3b82f6" stroke-width="2.5"/>
+  <text x="920" y="712" text-anchor="middle" font-size="16" font-weight="800" fill="#93c5fd">HA VPN gateway</text>
+  <text x="920" y="734" text-anchor="middle" font-size="12" fill="#94a3b8">interfaz 0: 2 túneles</text>
+  <text x="920" y="750" text-anchor="middle" font-size="12" fill="#94a3b8">interfaz 1 sin uso</text>
+  <rect x="1060" y="682" width="290" height="78" rx="12" fill="#0b1020" stroke="#3b82f6" stroke-width="2.5"/>
+  <text x="1205" y="712" text-anchor="middle" font-size="16" font-weight="800" fill="#93c5fd">Cloud Router · ASN 65010</text>
+  <text x="1205" y="734" text-anchor="middle" font-size="12" fill="#94a3b8">2 sesiones BGP, anuncia 10.10.1.0/24</text>
+  <text x="1205" y="750" text-anchor="middle" font-size="12" fill="#94a3b8">y aprende 10.20.0.0/16 de AWS</text>
+  <path d="M 1022,721 H 1058" fill="none" stroke="#94a3b8" stroke-width="2" marker-start="url(#aG)" marker-end="url(#aG)"/>
+</svg>
+    </div>
+    <div class="notes">
+      <div class="note blue">
+        <h3>Cómo se conectan</h3>
+        Una sola conexión VPN de AWS trae <b>2 túneles</b> que apuntan a una customer gateway, que es la interfaz 0 del HA VPN de GCP. Ambos túneles aprenden las rutas por <b>BGP</b>, sin rutas estáticas. Es un demo sin alta disponibilidad: el SLA de 99.99% pide 4 túneles.
+      </div>
+      <div class="note blue">
+        <h3>Cómo llega la Lambda a AWS sin NAT</h3>
+        La VPC no tiene Internet Gateway ni NAT. La Lambda usa un <b>endpoint Gateway</b> para DynamoDB (gratis) y un <b>endpoint Interface</b> para Secrets Manager (1 AZ, cobra por hora). Lo único que sale de la VPC es el tráfico a 10.10.1.0/24 por la VPN.
+      </div>
+      <div class="note amber">
+        <h3>Se activa con una variable</h3>
+        El flujo ② (Streams, event source mapping y DLQ SQS) solo existe con <b>enable_streams_sync = true</b>. Por defecto es false, así que el full load corre primero. El estimado de costos asume que está activado.
+      </div>
+      <div class="note amber">
+        <h3>Qué simula “on-premise”</h3>
+        La VM de GCP representa el SQL Server on-premise. Su firewall solo deja pasar tcp 1433 desde las dos subnets privadas de AWS. El Terraform puede dejarla con IP externa efímera (por defecto) solo para descargar la imagen.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Costos de tenerlo encendido 3 días</h2>
+  <p class="lead">72 horas con todo desplegado. Precios en USD, región us-east-1 (AWS) y us-east4 (GCP), consultados el 2026-11-11.</p>
+  <div class="wrap">
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Componente</th><th class="n">Precio unitario</th><th class="n">Cant.</th><th class="n">Horas</th><th class="n">Mín. (US$)</th><th class="n">Probable (US$)</th><th>Fuente</th></tr>
+        </thead>
+        <tbody>
+          <tr class="cloud aws"><td colspan="7">AWS</td></tr>
+          <tr><td><span class="fixed">Site-to-Site VPN</span> (1 conexión, 2 túneles)</td><td class="n">0.05 / conexión-hora</td><td class="n">1</td><td class="n">72</td><td class="n">3.60</td><td class="n">3.60</td><td><a class="src" href="#r1">[1]</a></td></tr>
+          <tr><td><span class="fixed">VPC endpoint Interface</span> (Secrets Manager)</td><td class="n">0.01 / AZ-hora</td><td class="n">1 AZ</td><td class="n">72</td><td class="n">0.72</td><td class="n">0.72</td><td><a class="src" href="#r2">[2]</a></td></tr>
+          <tr><td>VPC endpoint Gateway (DynamoDB)<small>El Terraform no crea NAT Gateway, por eso no hay ese costo.</small></td><td class="n">sin cargo</td><td class="n">1</td><td class="n">72</td><td class="n">0.00</td><td class="n">0.00</td><td><a class="src" href="#r3">[3]</a></td></tr>
+          <tr><td>Secrets Manager (1 secreto)</td><td class="n">0.40 / secreto-mes (prorrata)</td><td class="n">1</td><td class="n">72</td><td class="n">0.04</td><td class="n">0.04</td><td><a class="src" href="#r4">[4]</a></td></tr>
+          <tr><td>Lambda (256 MB, unas 10 ejecuciones de ~30 s)</td><td class="n">0.0000166667 / GB-s</td><td class="n">~75 GB-s</td><td class="n">-</td><td class="n">0.00</td><td class="n">0.01</td><td><a class="src" href="#r5">[5]</a></td></tr>
+          <tr><td>DynamoDB on-demand (2 tablas, ~200 registros)</td><td class="n">0.625 / M escrituras</td><td class="n">&lt; 5 mil</td><td class="n">-</td><td class="n">0.00</td><td class="n">0.01</td><td><a class="src" href="#r6">[6]</a></td></tr>
+          <tr><td>SQS (DLQ, casi sin mensajes)</td><td class="n">0.40 / M solicitudes</td><td class="n">~0</td><td class="n">-</td><td class="n">0.00</td><td class="n">0.00</td><td><a class="src" href="#r7">[7]</a></td></tr>
+          <tr><td>CloudWatch Logs (ingesta)</td><td class="n">0.50 / GB</td><td class="n">&lt; 0.05 GB</td><td class="n">-</td><td class="n">0.00</td><td class="n">0.01</td><td><a class="src" href="#r8">[8]</a></td></tr>
+          <tr><td>Transferencia saliente a GCP por la VPN</td><td class="n">0.09 / GB (100 GB gratis al mes)</td><td class="n">&lt; 0.1 GB</td><td class="n">-</td><td class="n">0.00</td><td class="n">0.01</td><td><a class="src" href="#r1">[1]</a></td></tr>
+          <tr class="sub"><td colspan="4">Subtotal AWS</td><td class="n">4.36</td><td class="n">4.40</td><td></td></tr>
+
+          <tr class="cloud gcp"><td colspan="7">Google Cloud</td></tr>
+          <tr><td><span class="fixed">HA VPN</span>, túneles<small>Precio de la tabla de la página, ubicación por defecto (us-central1). Confirmar us-east4 en la calculadora.</small></td><td class="n">0.05 / túnel-hora</td><td class="n">2</td><td class="n">72</td><td class="n">7.20</td><td class="n">7.20</td><td><a class="src" href="#r9">[9]</a></td></tr>
+          <tr><td>IP externa de la interfaz 1 del HA VPN (sin túnel)</td><td class="n">0.01 / hora</td><td class="n">1</td><td class="n">72</td><td class="n">0.00</td><td class="n">0.72</td><td><a class="src" href="#r9">[9]</a> <a class="src" href="#r10">[10]</a></td></tr>
+          <tr><td>Cloud Router (BGP)</td><td class="n">sin cargo</td><td class="n">1</td><td class="n">72</td><td class="n">0.00</td><td class="n">0.00</td><td><a class="src" href="#r11">[11]</a></td></tr>
+          <tr><td><span class="fixed">VM e2-medium</span> (Linux, on-demand)<small>Valor de un sitio de terceros: la página oficial carga la tabla con JavaScript.</small></td><td class="n">0.0377 / hora</td><td class="n">1</td><td class="n">72</td><td class="n">2.71</td><td class="n">2.71</td><td><a class="src" href="#r12">[12]</a></td></tr>
+          <tr><td>Disco de arranque pd-balanced de 30 GB<small>Precio de la primera columna de la tabla oficial.</small></td><td class="n">0.000136986 / GiB-hora</td><td class="n">30 GiB</td><td class="n">72</td><td class="n">0.30</td><td class="n">0.30</td><td><a class="src" href="#r13">[13]</a></td></tr>
+          <tr><td>IP externa efímera de la VM</td><td class="n">0.005 / hora</td><td class="n">1</td><td class="n">72</td><td class="n">0.00</td><td class="n">0.36</td><td><a class="src" href="#r10">[10]</a></td></tr>
+          <tr><td>Salida de datos hacia AWS por la VPN (hacia Norteamérica)</td><td class="n">0.12 / GiB (1 GiB gratis al mes)</td><td class="n">&lt; 0.1 GiB</td><td class="n">-</td><td class="n">0.00</td><td class="n">0.01</td><td><a class="src" href="#r10">[10]</a></td></tr>
+          <tr class="sub"><td colspan="4">Subtotal Google Cloud</td><td class="n">10.21</td><td class="n">11.30</td><td></td></tr>
+
+          <tr class="total"><td colspan="4">TOTAL 72 horas</td><td class="n">14.57</td><td class="n">15.70</td><td></td></tr>
+        </tbody>
+      </table>
+      <p class="disc">Rango: de US$ 14.6 a US$ 15.7. Conviene presupuestar unos <b>US$ 20</b> para tener margen. Es un estimado, no una factura.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:12px;">Supuestos</h3>
+      <ul class="sup">
+        <li><b>Mínimo</b>: solo los cargos fijos por hora y por almacenamiento. <b>Probable</b>: suma las IPs externas de GCP y un poco de tráfico y servicios por uso.</li>
+        <li><b>Regiones</b>: las que define variables.tf por defecto, us-east-1 en AWS y us-east4 en GCP.</li>
+        <li><b>VM</b>: e2-medium (2 vCPU, 4 GB) con disco pd-balanced de 30 GB, tal como lo declara el Terraform. Imagen COS sin licencia de SO de pago.</li>
+        <li><b>Tráfico</b>: bajo, para unos 100 a 200 registros. Un full load y algunos eventos de Streams mueven bien menos de 1 GB.</li>
+        <li><b>Streams activado</b> (enable_streams_sync = true): agrega la DLQ SQS y el event source mapping, que no tienen costo apreciable aquí.</li>
+        <li><b>Mes de 720 horas</b> para prorratear el secreto. Cada hora parcial se cobra como hora completa en los recursos por hora.</li>
+        <li><b>Free tier y créditos</b>: no se descuentan. AWS y Google pueden tener capa gratuita o créditos que bajarían el total real, sobre todo Lambda, DynamoDB, CloudWatch y SQS.</li>
+        <li>Impuestos y soporte no incluidos.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout">
+    <h3>Lo que más pesa es lo que cobra por hora aunque no se use</h3>
+    La VPN de AWS, los 2 túneles de HA VPN en GCP, el endpoint Interface y la VM suman cerca del <b>90%</b> del total. No dependen de cuántos datos muevas. Encendido todo, el demo gasta unos <b>US$ 0.22 por hora</b> (unos US$ 5 por día). Si se olvida prendido un mes completo serían unos <b>US$ 157</b>.<br/><br/>
+    <b>Cómo bajarlo:</b> corre <b>terraform destroy</b> apenas termines, o enciende todo solo el día de la charla (unas horas cuestan centavos, no dólares) y ensaya antes con una corrida corta.
+  </div>
+</section>
+
+<section>
+  <h2>Al terminar: destruir todo</h2>
+  <p class="lead">Un solo comando borra la VPN, la VM, la Lambda y las tablas en ambas nubes.</p>
+  <div class="wrap">
+    <div class="cmd">terraform destroy</div>
+    <div class="note amber">
+      <h3>Recordatorio de apagado</h3>
+      Después de destruir, revisa en la consola de AWS (VPN, VPC, Lambda, DynamoDB) y en la de GCP (Compute Engine, VPN, Cloud Router) que no quede nada. Un recurso olvidado sigue cobrando por hora.
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Referencias</h2>
+  <p class="lead">Consultadas el 2026-11-11. Los precios pueden cambiar; revisa las páginas antes de decidir.</p>
+  <div class="wrap">
+    <div class="card">
+      <ol class="refs">
+        <li id="r1">AWS Site-to-Site VPN, precio por conexión-hora ($0.05) y transferencia saliente ($0.09/GB): <a href="https://aws.amazon.com/vpn/pricing/">https://aws.amazon.com/vpn/pricing/</a></li>
+        <li id="r2">AWS PrivateLink, endpoints Interface ($0.01 por hora por AZ): <a href="https://aws.amazon.com/privatelink/pricing/">https://aws.amazon.com/privatelink/pricing/</a></li>
+        <li id="r3">Endpoints Gateway de DynamoDB, sin cargo adicional: <a href="https://docs.aws.amazon.com/vpc/latest/privatelink/gateway-endpoints.html">https://docs.aws.amazon.com/vpc/latest/privatelink/gateway-endpoints.html</a></li>
+        <li id="r4">AWS Secrets Manager ($0.40 por secreto al mes): <a href="https://aws.amazon.com/secrets-manager/pricing/">https://aws.amazon.com/secrets-manager/pricing/</a></li>
+        <li id="r5">AWS Lambda ($0.0000166667 por GB-s, free tier mensual): <a href="https://aws.amazon.com/lambda/pricing/">https://aws.amazon.com/lambda/pricing/</a></li>
+        <li id="r6">Amazon DynamoDB on-demand: <a href="https://aws.amazon.com/dynamodb/pricing/on-demand/">https://aws.amazon.com/dynamodb/pricing/on-demand/</a></li>
+        <li id="r7">Amazon SQS: <a href="https://aws.amazon.com/sqs/pricing/">https://aws.amazon.com/sqs/pricing/</a></li>
+        <li id="r8">Amazon CloudWatch, Logs: <a href="https://aws.amazon.com/cloudwatch/pricing/">https://aws.amazon.com/cloudwatch/pricing/</a></li>
+        <li id="r9">Google Cloud VPN ($0.05 por túnel-hora): <a href="https://cloud.google.com/vpn/pricing">https://cloud.google.com/vpn/pricing</a></li>
+        <li id="r10">Google Cloud, precios de red: IPs externas y salida de datos: <a href="https://cloud.google.com/vpc/network-pricing">https://cloud.google.com/vpc/network-pricing</a></li>
+        <li id="r11">Google Cloud, Network Connectivity (Cloud Router sin cargo): <a href="https://cloud.google.com/network-connectivity/pricing">https://cloud.google.com/network-connectivity/pricing</a></li>
+        <li id="r12">Compute Engine e2-medium en us-east4 ($0.0377/h). Fuente de terceros, porque la página oficial (<a href="https://cloud.google.com/compute/vm-instance-pricing">cloud.google.com/compute/vm-instance-pricing</a>) no muestra la tabla sin JavaScript: <a href="https://gcloud-compute.com/e2-medium.html">https://gcloud-compute.com/e2-medium.html</a></li>
+        <li id="r13">Google Cloud, discos persistentes (Balanced): <a href="https://cloud.google.com/compute/disks-image-pricing">https://cloud.google.com/compute/disks-image-pricing</a></li>
+      </ol>
+      <p class="disc">Las páginas oficiales de AWS para DynamoDB ($0.625 por millón de escrituras), CloudWatch Logs ($0.50 por GB) y SQS ($0.40 por millón) cargan sus tablas con JavaScript. Esos valores se contrastaron con fuentes secundarias; su peso en el total es menor a US$ 0.02.</p>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>
