@@ -1,24 +1,19 @@
-# Demo: VPN site-to-site entre AWS y Google Cloud (Terraform)
-
-## Propósito
-
-Este demo reproduce, en pequeño y con datos 100% ficticios, un caso real: replicar
-una tabla de **DynamoDB** hacia un **SQL Server on-premise** para poder hacer
-consultas SQL más elaboradas. En el caso real, la conexión AWS ↔ on-premise va por
-**AWS Direct Connect**, que es costoso de mantener en ambientes de staging o dev.
-
-Aquí **Google Cloud simula el on-premise** (una VM con SQL Server en Docker) y
-**Direct Connect se sustituye por una VPN site-to-site** de 2 túneles con BGP (sin alta disponibilidad, al ser un demo).
-Todo se crea con Terraform en una carpeta aislada y con estado local.
-
-## Arquitectura
-
+# Demo: Site-to-Site VPN between AWS and Google Cloud (Terraform)
+## Purpose
+This demo reproduces, on a small scale and with 100% fictitious data, a real-world case: replicating
+a **DynamoDB** table to an **on-premises SQL Server** so you can run more elaborate
+SQL queries. In the real case, the AWS ↔ on-premises connection goes over
+**AWS Direct Connect**, which is expensive to keep running in staging or dev environments.
+Here, **Google Cloud simulates the on-premises environment** (a VM running SQL Server in Docker) and
+**Direct Connect is replaced by a site-to-site VPN** with 2 tunnels and BGP (no high availability, since this is a demo).
+Everything is created with Terraform in an isolated folder with local state.
+## Architecture
 ```mermaid
 flowchart LR
-  subgraph AWS["AWS (VPC 10.20.0.0/16, sin IGW ni NAT)"]
+  subgraph AWS["AWS (VPC 10.20.0.0/16, no IGW or NAT)"]
     DDB[(DynamoDB<br/>demo-merchants-table)]
     STR[[Streams NEW_IMAGE]]
-    LMB[Lambda en VPC<br/>demo-dynamodb-sqlserver-sync]
+    LMB[Lambda in VPC<br/>demo-dynamodb-sqlserver-sync]
     SM[Secrets Manager<br/>demo-sqlserver-onprem]
     VGW{{VGW / TGW}}
     DDB --> STR --> LMB
@@ -26,189 +21,156 @@ flowchart LR
     LMB -. Gateway endpoint .-> DDB
     LMB --> VGW
   end
-  subgraph GCP["GCP simula on-premise (10.10.1.0/24)"]
+  subgraph GCP["GCP simulates on-premises (10.10.1.0/24)"]
     HAVPN{{HA VPN gateway<br/>+ Cloud Router}}
-    VM[VM COS + Docker<br/>SQL Server :1433]
+    VM[COS VM + Docker<br/>SQL Server :1433]
     HAVPN --> VM
   end
-  VGW == "2 túneles IPsec IKEv2 + BGP" ==> HAVPN
+  VGW == "2 IPsec IKEv2 tunnels + BGP" ==> HAVPN
 ```
-
 ```text
- DynamoDB --Streams--> Lambda (VPC privada) --1433--> [VGW] ==2 túneles== [HA VPN GCP] --> VM SQL Server
+ DynamoDB --Streams--> Lambda (private VPC) --1433--> [VGW] ==2 tunnels== [GCP HA VPN] --> SQL Server VM
                           |                                                  (Cloud Router BGP 65010)
-                          +--443--> endpoints VPC (DynamoDB / Secrets Manager)
+                          +--443--> VPC endpoints (DynamoDB / Secrets Manager)
 ```
-
-## Recursos principales
-
-| Recurso | Archivo | Descripción |
+## Main resources
+| Resource | File | Description |
 |---|---|---|
-| VPC, 2 subnets privadas, endpoints | `network_aws.tf` | Sin IGW ni NAT; endpoint Gateway de DynamoDB e Interface de Secrets Manager |
-| VGW (o TGW) | `network_aws.tf` | `aws_target_gateway = "vgw"` por defecto |
-| VPC, subnet, firewall | `network_gcp.tf` | Único ingress por defecto: tcp/1433 desde las subnets privadas de AWS |
-| VPN site-to-site | `vpn.tf` | 1 customer gateway, 1 conexión VPN, 2 túneles, 2 sesiones BGP |
-| VM SQL Server | `gcp_sqlserver.tf`, `gcp/` | Container-Optimized OS + Docker, `init.sql` idempotente |
-| DynamoDB + control + secreto | `aws_data.tf` | `demo-merchants-table` (Streams), `demo-sync-control`, `demo-sqlserver-onprem` |
+| VPC, 2 private subnets, endpoints | `network_aws.tf` | No IGW or NAT; DynamoDB Gateway endpoint and Secrets Manager Interface endpoint |
+| VGW (or TGW) | `network_aws.tf` | `aws_target_gateway = "vgw"` by default |
+| VPC, subnet, firewall | `network_gcp.tf` | Only ingress by default: tcp/1433 from the AWS private subnets |
+| Site-to-site VPN | `vpn.tf` | 1 customer gateway, 1 VPN connection, 2 tunnels, 2 BGP sessions |
+| SQL Server VM | `gcp_sqlserver.tf`, `gcp/` | Container-Optimized OS + Docker, idempotent `init.sql` |
+| DynamoDB + control table + secret | `aws_data.tf` | `demo-merchants-table` (Streams), `demo-sync-control`, `demo-sqlserver-onprem` |
 | Lambda | `aws_lambda.tf`, `lambda/` | `demo-dynamodb-sqlserver-sync`, Python 3.12, pymssql |
-| Streams (opcional) | `streams.tf` | DLQ + event source mapping, solo con `enable_streams_sync = true` |
-
-## Decisión: 2 túneles, sin HA
-
-- 1 HA VPN gateway en GCP (2 interfaces) y 1 Cloud Router. BGP se mantiene: HA VPN de Google exige rutas dinámicas.
-- 1 `aws_customer_gateway` (IP de la interfaz 0 de GCP) y 1 `aws_vpn_connection` dinámica con **2 túneles**.
-- Una conexión VPN de AWS apunta a una sola customer gateway, por eso **ambos túneles salen de la interfaz 0** de GCP; la interfaz 1 queda sin usar.
-- 1 `google_compute_external_vpn_gateway` con `TWO_IPS_REDUNDANCY` (interfaz 0 = IP del túnel 1 de AWS, interfaz 1 = IP del túnel 2).
-- Con 2 túneles en una sola interfaz **no aplica el SLA de 99.99%** de HA VPN (requiere 4 túneles: 2 conexiones, una por interfaz de GCP). Para el demo no importa; para producción usa la topología de 4 túneles con `FOUR_IPS_REDUNDANCY`.
-- IKEv2 y un solo set de cifrado (AES256, SHA2-256, DH 14) para evitar fallos de rekey por fragmentación IKE.
-- ASNs: Cloud Router GCP `65010`, lado AWS `64512`.
-
+| Streams (optional) | `streams.tf` | DLQ + event source mapping, only with `enable_streams_sync = true` |
+## Design decision: 2 tunnels, no HA
+- 1 HA VPN gateway in GCP (2 interfaces) and 1 Cloud Router. BGP stays: Google's HA VPN requires dynamic routing.
+- 1 `aws_customer_gateway` (the IP of GCP interface 0) and 1 dynamic `aws_vpn_connection` with **2 tunnels**.
+- An AWS VPN connection points to a single customer gateway, so **both tunnels terminate on GCP interface 0**; interface 1 stays unused.
+- 1 `google_compute_external_vpn_gateway` with `TWO_IPS_REDUNDANCY` (interface 0 = IP of AWS tunnel 1, interface 1 = IP of tunnel 2).
+- With 2 tunnels on a single interface, the **99.99% SLA** of HA VPN **does not apply** (it requires 4 tunnels: 2 connections, one per GCP interface). That does not matter for a demo; for production, use the 4-tunnel topology with `FOUR_IPS_REDUNDANCY`.
+- IKEv2 and a single cipher set (AES256, SHA2-256, DH 14) to avoid rekey failures caused by IKE fragmentation.
+- ASNs: GCP Cloud Router `65010`, AWS side `64512`.
 ## VGW vs TGW
-
-El default es **VGW**: es más simple y barato (TGW cobra por attachment y por GB procesado).
-Solo TGW soporta ECMP, que este demo no necesita. Si lo quieres probar:
+The default is **VGW**: it is simpler and cheaper (TGW charges per attachment and per GB processed).
+Only TGW supports ECMP, which this demo does not need. If you want to try it:
 `terraform apply -var aws_target_gateway=tgw`.
-
-## Costos aproximados y destroy
-
-Valores de referencia, confirma en las páginas oficiales de precios:
-
-- 1 conexión VPN de AWS: ~0.05 USD por conexión-hora (≈3.6 USD por 3 días). Antes, con 2 conexiones, el doble.
-- VPC endpoint de Secrets Manager (1 subnet): ~0.01 USD/hora.
-- VM `e2-medium` en GCP y su disco de 30 GB.
-
-Son costos por hora: **destruye al terminar** con `terraform destroy`. El secreto usa
-`recovery_window_in_days = 0` para poder recrearlo sin esperas.
-
-## Prerrequisitos
-
-- Terraform >= 1.5, AWS CLI, `gcloud`, `jq`, `python3` y `pip` con acceso a internet.
-- Credenciales **propias** (no incluidas en este repo):
-  - AWS: perfil o variables de entorno de tu cuenta (opcional `aws_profile`).
-  - GCP: `gcloud auth application-default login` con tu cuenta personal y un proyecto con facturación.
-
-## Pasos
-
+## Approximate costs and destroy
+Reference values; confirm them on the official pricing pages:
+- 1 AWS VPN connection: ~0.05 USD per connection-hour (≈3.6 USD for 3 days). Before, with 2 connections, double that.
+- Secrets Manager VPC endpoint (1 subnet): ~0.01 USD/hour.
+- `e2-medium` VM in GCP and its 30 GB disk.
+These costs accrue hourly: **destroy everything when you finish** with `terraform destroy`. The secret uses
+`recovery_window_in_days = 0` so it can be recreated without waiting.
+## Prerequisites
+- Terraform >= 1.5, AWS CLI, `gcloud`, `jq`, `python3` and `pip` with internet access.
+- **Your own** credentials (not included in this repo):
+  - AWS: a profile or environment variables for your account (optional `aws_profile`).
+  - GCP: `gcloud auth application-default login` with your personal account and a project with billing enabled.
+## Steps
 ```bash
-# 1. Configuración
-cp terraform.tfvars.example terraform.tfvars   # edita gcp_project_id y lo que necesites
+# 1. Configuration
+cp terraform.tfvars.example terraform.tfvars   # edit gcp_project_id and anything else you need
 
-# 2. Empaquetar la Lambda (requiere red para pip)
+# 2. Package the Lambda (requires network access for pip)
 ./scripts/build-lambda.sh
 
-# 3. Desplegar (revisa el plan antes de aplicar)
+# 3. Deploy (review the plan before applying)
 terraform init
 terraform plan
 terraform apply
 
-# 4. Verificar los túneles y BGP (solo lectura)
+# 4. Verify the tunnels and BGP (read-only)
 ./scripts/check-vpn.sh
 
-# 5. Cargar datos ficticios en DynamoDB
+# 5. Load fictitious data into DynamoDB
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r scripts/requirements-scripts.txt
 python scripts/seed_dynamodb.py --region us-east-1
 
-# 6. Full load: primero dry-run, luego real
+# 6. Full load: dry-run first, then the real one
 ./scripts/full-load.sh --dry-run
 ./scripts/full-load.sh
 
-# 7. Activar replicación por Streams (el seed no dispara eventos porque el mapping estaba apagado)
+# 7. Enable Streams replication (the seed does not trigger events because the mapping was off)
 terraform apply -var enable_streams_sync=true
-# IMPORTANTE: el mapping arranca en LATEST. Cualquier INSERT/UPDATE hecho ANTES de que
-# el mapping este Enabled nunca llega a SQL Server (sin error ni DLQ) y los conteos
-# difieren en 1. No hagas INSERTs de prueba antes de este paso. Si ocurre, repara con
-# ./scripts/full-load.sh (MERGE idempotente) y compara conteos con verify-sql.sh.
+# IMPORTANT: the mapping starts at LATEST. Any INSERT/UPDATE made BEFORE the
+# mapping is Enabled never reaches SQL Server (no error and no DLQ message) and the counts
+# differ by 1. Do not run test INSERTs before this step. If it happens, repair it with
+# ./scripts/full-load.sh (idempotent MERGE) and compare counts with verify-sql.sh.
 
-# 8. Demo en vivo
+# 8. Live demo
 ./scripts/demo-live.sh insert
 ./scripts/demo-live.sh update <merchant_id> SUSPENDIDO 2500
 
-# 9. Verificar SQL Server desde la Lambda (ping y count)
+# 9. Verify SQL Server from the Lambda (ping and count)
 ./scripts/verify-sql.sh
 
-# 10. Limpiar
+# 10. Clean up
 terraform destroy
 ```
-
-Variables útiles de los scripts: `FUNCTION_NAME`, `TABLE_NAME`, `CONTROL_TABLE`, `WAIT_SECONDS`
-y, para la parte GCP de `check-vpn.sh`, `GCP_PROJECT`, `GCP_REGION`, `ROUTER_NAME` (nombre del Cloud Router;
-visible en la consola o con `gcloud compute routers list`).
-
-### Acciones de la Lambda
-
-La Lambda acepta eventos para verificar en vivo sin abrir puertos extra al on-premise simulado:
-
-- `{"action":"ping"}`: abre conexión y devuelve `@@SERVERNAME` y `@@VERSION`.
-- `{"action":"count"}`: devuelve `COUNT(*)` de la tabla destino; con `"merchant_id"` devuelve además esa fila.
-- `{"full_scan":true,"dry_run":true,"start_key":{...}}`: full load paginado. El corte por tiempo devuelve
-  como checkpoint la clave del último item procesado y siempre se procesa al menos un item por invocación.
-
-## Seguridad
-
-- Firewall de GCP: solo tcp/1433 desde las subnets privadas de AWS. SSH está apagado (`enable_iap_ssh = false`); si lo activas, solo desde el rango de IAP.
-- La Lambda tiene un Security Group mínimo: sin ingress; egress 1433 al CIDR de GCP y 443 solo a los endpoints. Nada hacia `0.0.0.0/0`.
-- Las contraseñas se generan con `random_password` y el secreto se guarda en Secrets Manager. Quedan en el **estado local** de Terraform.
-- No subas `terraform.tfstate*` ni `terraform.tfvars` al repositorio (ya están en `.gitignore`).
-- La VM tiene IP externa efímera solo para descargar la imagen de SQL Server (`assign_public_ip`); el firewall no permite ingress desde internet.
-
-## Verificar túneles y BGP
+Useful script variables: `FUNCTION_NAME`, `TABLE_NAME`, `CONTROL_TABLE`, `WAIT_SECONDS`
+and, for the GCP part of `check-vpn.sh`, `GCP_PROJECT`, `GCP_REGION`, `ROUTER_NAME` (the Cloud Router name;
+visible in the console or with `gcloud compute routers list`).
+### Lambda actions
+The Lambda accepts events so you can verify things live without opening extra ports to the simulated on-premises environment:
+- `{"action":"ping"}`: opens a connection and returns `@@SERVERNAME` and `@@VERSION`.
+- `{"action":"count"}`: returns `COUNT(*)` of the target table; with `"merchant_id"` it also returns that row.
+- `{"full_scan":true,"dry_run":true,"start_key":{...}}`: paginated full load. When the time limit is reached, it returns
+  the key of the last processed item as a checkpoint, and at least one item is always processed per invocation.
+## Security
+- GCP firewall: only tcp/1433 from the AWS private subnets. SSH is off (`enable_iap_ssh = false`); if you enable it, it is allowed only from the IAP range.
+- The Lambda has a minimal Security Group: no ingress; egress on 1433 to the GCP CIDR and on 443 only to the endpoints. Nothing goes to `0.0.0.0/0`.
+- Passwords are generated with `random_password` and the secret is stored in Secrets Manager. They remain in the **local Terraform state**.
+- Do not commit `terraform.tfstate*` or `terraform.tfvars` to the repository (they are already in `.gitignore`).
+- The VM has an ephemeral external IP only to download the SQL Server image (`assign_public_ip`); the firewall does not allow ingress from the internet.
+## Verify tunnels and BGP
 ```bash
-./scripts/check-vpn.sh   # AWS: 2 túneles (UP) y GCP: 2 túneles + 2 sesiones BGP (con GCP_PROJECT, GCP_REGION, ROUTER_NAME)
+./scripts/check-vpn.sh   # AWS: 2 tunnels (UP) and GCP: 2 tunnels + 2 BGP sessions (with GCP_PROJECT, GCP_REGION, ROUTER_NAME)
 aws ec2 describe-vpn-connections --filters "Name=tag:Project,Values=demo-aws-gcp-vpn" --query 'VpnConnections[].VgwTelemetry[].[OutsideIpAddress,Status,StatusMessage]' --output table
 gcloud compute routers get-status <router> --region <region> --format="table(result.bgpPeerStatus[].name,result.bgpPeerStatus[].state)"
 ```
 ## Troubleshooting
-
-- **Túnel DOWN**: revisa `./scripts/check-vpn.sh`; confirma que las PSK coinciden (las gestiona Terraform) y que los 2 túneles usan IKEv2. AWS inicia el túnel (`startup_action = start`), puede tardar unos minutos.
-- **Falla el rekey IKE**: suele ser fragmentación por ofrecer varios sets de cifrado; este demo fija uno solo. No lo amplíes.
-- **BGP no establece**: el túnel debe estar UP primero; verifica los ASN (65010 / 64512) y los rangos `169.254.10.x/30` de cada túnel con `gcloud compute routers get-status`.
-- **Lambda con timeout hacia 1433**: revisa la propagación de rutas en la route table privada (VGW), la ruta al CIDR de GCP, el firewall de GCP (origen = subnets privadas de AWS), que el contenedor `sqlserver` esté arriba en la VM y el egress 1433 del SG de la Lambda.
-- **SQL Server tarda en estar listo**: la VM descarga la imagen al arrancar; revisa el serial output de la VM (`gcloud compute instances get-serial-port-output`).
-- **Lambda no llega a Secrets Manager o DynamoDB**: sin NAT dependen de los VPC endpoints; confirma `private_dns_enabled` y el SG del endpoint.
-
-## Guion sugerido (20 min, RoxsFest 12-nov-2026)
-
-1. **(2 min) El problema**: DynamoDB no permite SQL elaborado; la solución real replica a SQL Server on-premise por Direct Connect, caro para dev/staging.
-2. **(3 min) La idea del demo**: GCP como on-premise simulado, VPN site-to-site en lugar de Direct Connect. Mostrar el diagrama.
-3. **(3 min) La VPN**: 1 customer gateway, 1 conexión, 2 túneles, BGP, por qué no hay HA (SLA 99.99% requiere 4 túneles), VGW vs TGW.
-4. **(3 min) Terraform**: recorrer `vpn.tf` y mostrar `terraform apply` ya ejecutado (los túneles tardan en levantar; deja el apply hecho antes).
-5. **(2 min) Estado de la VPN**: `./scripts/check-vpn.sh` con los 2 túneles UP y las sesiones BGP.
-6. **(3 min) Full load**: seed, `./scripts/full-load.sh --dry-run` y real, viendo la paginación e `./scripts/verify-sql.sh`.
-7. **(3 min) En vivo**: `terraform apply -var enable_streams_sync=true`, luego `./scripts/demo-live.sh insert` y `update`.
-8. **(1 min) Cierre**: seguridad, costos, `terraform destroy` y preguntas.
-
-## Demo en vivo con el menu
-
-Script: `scripts/demo-menu.sh` (requiere `aws` y `jq`). No necesita SSH: SQL Server se consulta invocando la Lambda dentro de la VPC, a traves de la VPN.
-
+- **Tunnel DOWN**: run `./scripts/check-vpn.sh`; confirm that the PSKs match (Terraform manages them) and that both tunnels use IKEv2. AWS initiates the tunnel (`startup_action = start`); it can take a few minutes.
+- **IKE rekey fails**: usually caused by fragmentation when several cipher sets are offered; this demo pins a single one. Do not widen it.
+- **BGP does not establish**: the tunnel must be UP first; check the ASNs (65010 / 64512) and the `169.254.10.x/30` ranges of each tunnel with `gcloud compute routers get-status`.
+- **Lambda times out connecting to 1433**: check route propagation in the private route table (VGW), the route to the GCP CIDR, the GCP firewall (source = AWS private subnets), that the `sqlserver` container is up on the VM, and the egress rule on 1433 in the Lambda's SG.
+- **SQL Server takes a while to be ready**: the VM downloads the image at boot; check the VM's serial output (`gcloud compute instances get-serial-port-output`).
+- **Lambda cannot reach Secrets Manager or DynamoDB**: without NAT they depend on the VPC endpoints; confirm `private_dns_enabled` and the endpoint's SG.
+## Suggested talk outline (20 min, RoxsFest 12-Nov-2026)
+1. **(2 min) The problem**: DynamoDB does not support elaborate SQL; the real solution replicates to an on-premises SQL Server over Direct Connect, which is expensive for dev/staging.
+2. **(3 min) The idea behind the demo**: GCP as a simulated on-premises environment, site-to-site VPN instead of Direct Connect. Show the diagram.
+3. **(3 min) The VPN**: 1 customer gateway, 1 connection, 2 tunnels, BGP, why there is no HA (the 99.99% SLA requires 4 tunnels), VGW vs TGW.
+4. **(3 min) Terraform**: walk through `vpn.tf` and show a `terraform apply` that has already run (the tunnels take a while to come up; run the apply beforehand).
+5. **(2 min) VPN status**: `./scripts/check-vpn.sh` with the 2 tunnels UP and the BGP sessions.
+6. **(3 min) Full load**: seed, `./scripts/full-load.sh --dry-run` and the real run, watching the pagination, and `./scripts/verify-sql.sh`.
+7. **(3 min) Live**: `terraform apply -var enable_streams_sync=true`, then `./scripts/demo-live.sh insert` and `update`.
+8. **(1 min) Wrap-up**: security, costs, `terraform destroy` and questions.
+## Live demo with the menu
+Script: `scripts/demo-menu.sh` (requires `aws` and `jq`). It does not need SSH: SQL Server is queried by invoking the Lambda inside the VPC, through the VPN.
+Script output messages are in Spanish.
 ```bash
-export AWS_PROFILE=<tu-perfil> AWS_DEFAULT_REGION=us-east-1
-./scripts/demo-menu.sh        # menu interactivo
-./scripts/demo-menu.sh 3      # o una opcion directa (1 a 5)
+export AWS_PROFILE=<your-profile> AWS_DEFAULT_REGION=us-east-1
+./scripts/demo-menu.sh        # interactive menu
+./scripts/demo-menu.sh 3      # or run a single option directly (1 to 5)
 ```
-
-Opciones:
-
-1. Cuenta los registros de DynamoDB (scan `Select=COUNT`).
-2. Cuenta los registros de SQL Server (GCP) via Lambda/VPN.
-3. Compara ambos: `OK` si coinciden, `DIFERENCIA` con cuantos faltan si no.
-4. Crea un registro ficticio `DEMO-LIVE-<HHMMSS>` en DynamoDB y guarda su id en `/tmp/demo-last-id`.
-5. Busca ese id en SQL Server cada segundo (maximo 60 s, configurable con `MAX_WAIT`) y muestra en cuantos segundos aparecio.
-
-Orden recomendado para la charla: **3 -> 4 -> 5 -> 3**.
-
-Consejo: ensaya antes. La primera invocacion de la Lambda puede tardar mas (arranque en frio), asi que corre la opcion 3 un par de minutos antes de empezar.
-
-## Destruir y redesplegar rapido
-
-`terraform.tfvars` (local, gitignored) se conserva entre ciclos. El destroy necesita el paquete de la Lambda:
-
+Options:
+1. Counts the records in DynamoDB (`Select=COUNT` scan).
+2. Counts the records in SQL Server (GCP) through the Lambda/VPN.
+3. Compares both: `OK` if they match, `DIFERENCIA` with the number of missing records if they do not.
+4. Creates a fictitious record `DEMO-LIVE-<HHMMSS>` in DynamoDB and saves its id in `/tmp/demo-last-id`.
+5. Looks for that id in SQL Server every second (60 s maximum, configurable with `MAX_WAIT`) and shows how many seconds it took to appear.
+Recommended order for the talk: **3 -> 4 -> 5 -> 3**.
+Tip: rehearse beforehand. The first Lambda invocation can take longer (cold start), so run option 3 a couple of minutes before you start.
+## Destroy and redeploy quickly
+`terraform.tfvars` (local, gitignored) is kept between cycles. The destroy needs the Lambda package:
 ```bash
 ./scripts/build-lambda.sh
-terraform destroy -var enable_streams_sync=true   # ~20 min: las ENIs de la Lambda en la VPC tardan en liberarse
+terraform destroy -var enable_streams_sync=true   # ~20 min: the Lambda's ENIs in the VPC take a while to be released
 ```
-
-Redespliegue: pasos 2 a 7 de arriba (~35-45 min en total: apply ~15 min, VPN/BGP arriba ~5-10 min, seed y full load pocos minutos).
-Antes de la opcion 4 del menu, confirma que el event source mapping este `Enabled`
-(`aws lambda list-event-source-mappings --function-name <funcion>`): arranca en `LATEST`.
+Redeploy: steps 2 to 7 above (~35-45 min in total: apply ~15 min, VPN/BGP up ~5-10 min, seed and full load a few minutes).
+Before menu option 4, confirm that the event source mapping is `Enabled`
+(`aws lambda list-event-source-mappings --function-name <function-name>`): it starts at `LATEST`.
+## License
+MIT. See the LICENSE file.
